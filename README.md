@@ -1,2 +1,2 @@
 # AlgoTrading
-FX Bots and Indicators
+FX Bots and Custom Indicators using MQL5
