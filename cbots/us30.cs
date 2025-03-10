@@ -26,10 +26,10 @@ namespace cAlgo.Robots
         [Parameter("Take Profit (pips)", DefaultValue = 100)]
         public double TakeProfit { get; set; }
 
-        [Parameter("Telegram Bot Token", DefaultValue = "7831871007:AAGH8MKCwXgohoh8R8DDHIPHbBRF98mUDV4")]
+        [Parameter("Telegram Bot Token", DefaultValue = "BOT-Token")]
         public string TelegramBotToken { get; set; }
 
-        [Parameter("Telegram Chat ID", DefaultValue = "7482113709")]
+        [Parameter("Telegram Chat ID", DefaultValue = "ChatID")]
         public string TelegramChatID { get; set; }
 
         // Indicators
