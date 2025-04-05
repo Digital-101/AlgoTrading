@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
 //|                      NinjaTurtleScalperEA.mq5                    |
-//|                        Copyright 2023, YourCompanyName           |
+//|                        Copyright 2025, AutomateX           |
 //|                     Complete Working Version                     |
 //+------------------------------------------------------------------+
-#property copyright "Copyright 2023, YourCompanyName"
-#property link      "https://www.yourwebsite.com"
+#property copyright "Copyright 2025, AutomateX"
+#property link      "https://automatex.vercel.app/"
 #property version   "5.0"
 #include <Trade/Trade.mqh>
 #include <ChartObjects/ChartObjectsTxtControls.mqh>
