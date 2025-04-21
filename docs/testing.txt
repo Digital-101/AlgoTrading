@@ -1,0 +1,4 @@
+Backtesting and Optimization:
+
+1. Historical Data: Test the strategy on historical data to evaluate performance.
+2. Walk-Forward Optimization: Optimize parameters on out-of-sample data to ensure robustness.
