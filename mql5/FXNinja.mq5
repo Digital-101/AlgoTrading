@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, MetaQuotes Software Corp."
 #property link      "https://www.mql5.com"
-#property version   "2.20"
+#property version   "2.48"
 
 //+------------------------------------------------------------------+
 //| Includes                                                        |
@@ -19,40 +19,69 @@
 //+------------------------------------------------------------------+
 //| Input Parameters                                                |
 //+------------------------------------------------------------------+
-input int      MAPeriod = 14;             // MA Period
-input int      RSIPeriod = 14;            // RSI Period
-input int      BBPeriod = 20;             // Bollinger Bands Period
-input double   BBDeviation = 2.0;         // Bollinger Bands Deviation
-input double   StopLoss = 50;             // Stop Loss (pips)
-input double   TakeProfit = 100;          // Take Profit (pips)
-input double   RiskPerTrade = 1.0;        // Risk % per trade (1.0 = 1%)
-input int      MaxSlippage = 3;           // Maximum slippage (points)
+input int      MAPeriod = 35;             // MA Period (14-50)
+input int      RSIPeriod = 14;            // RSI Period (10-20)
+input int      BBPeriod = 20;             // Bollinger Bands Period (15-30)
+input double   BBDeviation = 2.0;         // Bollinger Bands Deviation (1.5-2.5)
+input double   StopLoss = 400;            // Stop Loss in points
+input double   TakeProfit = 1000;         // Take Profit in points
+input double   RiskPerTrade = 1.0;        // Risk % per trade
+input int      MaxSlippage = 3;           // Maximum slippage
 input color    BuyColor = clrDodgerBlue;  // Buy signal color
 input color    SellColor = clrOrangeRed;  // Sell signal color
-input int      FontSize = 10;             // Display font size
-input double   MaxPositionSize = 10.0;    // Maximum lot size allowed
+input int      FontSize = 12;             // Display font size
+input double   MaxPositionSize = 1.0;     // Maximum lot size
+input double   MinAccountBalance = 200.0; // Minimum account balance
 
 //+------------------------------------------------------------------+
 //| Global Variables                                                |
 //+------------------------------------------------------------------+
 CTrade trade;
-int maHandle, rsiHandle, bbHandle;
-datetime lastBarTime;
-CChartObjectLabel infoLabel, signalLabel, maLabel, rsiLabel, bbLabel;
+int maHandle = INVALID_HANDLE;
+int rsiHandle = INVALID_HANDLE;
+int bbHandle = INVALID_HANDLE;
+datetime lastBarTime = 0;
+datetime lastTradeTime = 0;
+int todayTrades = 0;
+datetime lastTradeDay = 0;
+CChartObjectLabel infoLabel, signalLabel, maLabel, rsiLabel, bbLabel, lotSizeLabel, balanceLabel;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                  |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   // Initialize indicators
+   //Check if user is allowed to use program
+   long accountCustomer = 2001048432;
+   long accountNo = AccountInfoInteger(ACCOUNT_LOGIN);
+   if(accountCustomer == accountNo)
+     {
+         Print(__FUNCTION__, "> License verified");
+     }else{
+         Print(__FUNCTION__, "> License is Invalid...");
+         //ExpertRemove();
+         return(INIT_FAILED);
+     }
+
+   // Initialize indicators with error checking
    maHandle = iMA(_Symbol, _Period, MAPeriod, 0, MODE_SMA, PRICE_CLOSE);
-   rsiHandle = iRSI(_Symbol, _Period, RSIPeriod, PRICE_CLOSE);
-   bbHandle = iBands(_Symbol, _Period, BBPeriod, 0, BBDeviation, PRICE_CLOSE);
-   
-   if(maHandle == INVALID_HANDLE || rsiHandle == INVALID_HANDLE || bbHandle == INVALID_HANDLE)
+   if(maHandle == INVALID_HANDLE)
    {
-      Print("Error creating indicators");
+      Print("Failed to create MA indicator: ", GetLastError());
+      return(INIT_FAILED);
+   }
+
+   rsiHandle = iRSI(_Symbol, _Period, RSIPeriod, PRICE_CLOSE);
+   if(rsiHandle == INVALID_HANDLE)
+   {
+      Print("Failed to create RSI indicator: ", GetLastError());
+      return(INIT_FAILED);
+   }
+
+   bbHandle = iBands(_Symbol, _Period, BBPeriod, 0, BBDeviation, PRICE_CLOSE);
+   if(bbHandle == INVALID_HANDLE)
+   {
+      Print("Failed to create Bollinger Bands indicator: ", GetLastError());
       return(INIT_FAILED);
    }
    
@@ -62,46 +91,93 @@ int OnInit()
    trade.SetTypeFillingBySymbol(_Symbol);
    
    // Create display labels
-   CreateInfoLabels();
+   if(!CreateInfoLabels())
+   {
+      Print("Failed to create display labels");
+      return(INIT_FAILED);
+   }
    
+   // Initialize trade counter
+   MqlDateTime today;
+   TimeCurrent(today);
+   lastTradeDay = StructToTime(today);
+   lastTradeTime = 0;
+   
+   Print("EA initialized successfully on ", _Symbol, " ", EnumToString(_Period));
    return(INIT_SUCCEEDED);
 }
 
 //+------------------------------------------------------------------+
-//| Create information labels on chart                              |
+//| Create information labels                                       |
 //+------------------------------------------------------------------+
-void CreateInfoLabels()
+bool CreateInfoLabels()
 {
    // Info label
-   infoLabel.Create(0, "InfoLabel", 0, 10, 20);
-   infoLabel.Description("FX Ninja EA v2.20");
+   if(!infoLabel.Create(0, "InfoLabel", 0, 10, 20))
+   {
+      Print("Failed to create InfoLabel");
+      return false;
+   }
+   infoLabel.Description("FX Ninja EA v2.48");
    infoLabel.Color(clrWhite);
    infoLabel.FontSize(FontSize);
    
+   // Balance label
+   if(!balanceLabel.Create(0, "BalanceLabel", 0, 10, 40))
+   {
+      Print("Failed to create BalanceLabel");
+      return false;
+   }
+   balanceLabel.Color(clrWhite);
+   balanceLabel.FontSize(FontSize);
+   
    // Signal label
-   signalLabel.Create(0, "SignalLabel", 0, 10, 50);
+   if(!signalLabel.Create(0, "SignalLabel", 0, 10, 70))
+   {
+      Print("Failed to create SignalLabel");
+      return false;
+   }
    signalLabel.Description("Waiting for signal...");
    signalLabel.Color(clrGray);
    signalLabel.FontSize(FontSize + 2);
-   signalLabel.Font("Arial Bold");
    
    // MA label
-   maLabel.Create(0, "MALabel", 0, 10, 80);
-   maLabel.Description("MA: -");
+   if(!maLabel.Create(0, "MALabel", 0, 10, 100))
+   {
+      Print("Failed to create MALabel");
+      return false;
+   }
    maLabel.Color(clrGold);
    maLabel.FontSize(FontSize);
    
    // RSI label
-   rsiLabel.Create(0, "RSILabel", 0, 10, 110);
-   rsiLabel.Description("RSI: -");
+   if(!rsiLabel.Create(0, "RSILabel", 0, 10, 130))
+   {
+      Print("Failed to create RSILabel");
+      return false;
+   }
    rsiLabel.Color(clrDeepSkyBlue);
    rsiLabel.FontSize(FontSize);
    
    // BB label
-   bbLabel.Create(0, "BBLabel", 0, 10, 140);
-   bbLabel.Description("BB: -");
+   if(!bbLabel.Create(0, "BBLabel", 0, 10, 160))
+   {
+      Print("Failed to create BBLabel");
+      return false;
+   }
    bbLabel.Color(clrLimeGreen);
    bbLabel.FontSize(FontSize);
+   
+   // Lot size label
+   if(!lotSizeLabel.Create(0, "LotSizeLabel", 0, 10, 190))
+   {
+      Print("Failed to create LotSizeLabel");
+      return false;
+   }
+   lotSizeLabel.Color(clrWhite);
+   lotSizeLabel.FontSize(FontSize);
+   
+   return true;
 }
 
 //+------------------------------------------------------------------+
@@ -116,62 +192,46 @@ void OnDeinit(const int reason)
    
    // Remove labels
    infoLabel.Delete();
+   balanceLabel.Delete();
    signalLabel.Delete();
    maLabel.Delete();
    rsiLabel.Delete();
    bbLabel.Delete();
+   lotSizeLabel.Delete();
 }
 
 //+------------------------------------------------------------------+
-//| Calculate safe lot size with volume limits                      |
+//| Calculate position size                                         |
 //+------------------------------------------------------------------+
 double CalculateLotSize()
 {
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double riskAmount = balance * RiskPerTrade / 100;
+   if(balance < MinAccountBalance) return 0.0;
+   
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = MathMin(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX), MaxPositionSize);
+   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   
+   double riskAmount = balance * RiskPerTrade / 100.0;
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    
-   if(tickValue == 0 || tickSize == 0 || point == 0 || StopLoss == 0)
-   {
-      Print("Error in lot size calculation parameters");
-      return(0);
-   }
+   if(tickValue <= 0 || tickSize <= 0 || point <= 0 || StopLoss <= 0) return 0.0;
    
-   // Calculate lot size based on risk
    double lotSize = riskAmount / (StopLoss * tickValue * (point / tickSize));
-   
-   // Get broker volume constraints
-   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   
-   // Apply user-defined maximum position size
-   maxLot = MathMin(maxLot, MaxPositionSize);
-   
-   // Normalize lot size
    lotSize = MathFloor(lotSize / lotStep) * lotStep;
    lotSize = MathMax(minLot, MathMin(maxLot, lotSize));
    
    // Margin check
    double marginRequired;
    if(!OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, lotSize, SymbolInfoDouble(_Symbol, SYMBOL_ASK), marginRequired))
-   {
-      Print("Error calculating margin requirements");
-      return(0);
-   }
-      
-   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
-   if(marginRequired > freeMargin)
-   {
-      // Reduce lot size to fit available margin
-      double maxLotByMargin = freeMargin / marginRequired * lotSize;
-      maxLotByMargin = MathFloor(maxLotByMargin / lotStep) * lotStep;
-      lotSize = MathMax(minLot, MathMin(maxLotByMargin, lotSize));
-   }
+      return 0.0;
    
-   return(lotSize);
+   if(marginRequired > AccountInfoDouble(ACCOUNT_MARGIN_FREE))
+      return 0.0;
+   
+   return lotSize;
 }
 
 //+------------------------------------------------------------------+
@@ -182,74 +242,75 @@ bool ValidateStops(double entryPrice, double &sl, double &tp, bool isBuy)
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * point;
    
-   // Get broker stop level requirements
    long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   long freezeLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double minDist = (stopLevel > 0 ? stopLevel : 10) * point + spread;
    
-   // Calculate minimum distances
-   double minDist = stopLevel * point;
-   double freezeDist = freezeLevel * point;
-   
-   // Set reasonable defaults if zero
-   if(minDist <= 0) minDist = 10 * point;
-   if(freezeDist <= 0) freezeDist = minDist;
-   
-   // Calculate required minimum distance
-   double requiredDist = MathMax(minDist, freezeDist) + spread;
-   
-   if(isBuy) // Buy order
+   if(isBuy)
    {
       sl = entryPrice - StopLoss * point;
       tp = entryPrice + TakeProfit * point;
       
-      // Adjust if too close
-      if((entryPrice - sl) < requiredDist) sl = entryPrice - requiredDist;
-      if((tp - entryPrice) < requiredDist) tp = entryPrice + requiredDist;
+      if(entryPrice - sl < minDist) sl = entryPrice - minDist;
+      if(tp - entryPrice < minDist) tp = entryPrice + minDist;
       
-      // Final validation
-      if(sl >= entryPrice || tp <= entryPrice) return false;
+      return (sl < entryPrice && tp > entryPrice);
    }
-   else // Sell order
+   else
    {
       sl = entryPrice + StopLoss * point;
       tp = entryPrice - TakeProfit * point;
       
-      // Adjust if too close
-      if((sl - entryPrice) < requiredDist) sl = entryPrice + requiredDist;
-      if((entryPrice - tp) < requiredDist) tp = entryPrice - requiredDist;
+      if(sl - entryPrice < minDist) sl = entryPrice + minDist;
+      if(entryPrice - tp < minDist) tp = entryPrice - minDist;
       
-      // Final validation
-      if(sl <= entryPrice || tp >= entryPrice) return false;
+      return (sl > entryPrice && tp < entryPrice);
    }
-   
-   return true;
 }
 
 //+------------------------------------------------------------------+
-//| Update display labels                                           |
+//| Check if new trade is allowed                                   |
 //+------------------------------------------------------------------+
-void UpdateDisplay(double maValue, double rsiValue, double bbUpper, double bbLower, double bbMiddle, string signal)
+bool IsNewTradeAllowed()
 {
-   // Update info label
-   string infoText = StringFormat("FX Ninja EA v2.20\nSymbol: %s\nTime: %s\nBalance: %.2f %s",
-                                 _Symbol, TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES),
-                                 AccountInfoDouble(ACCOUNT_BALANCE), AccountInfoString(ACCOUNT_CURRENCY));
-   infoLabel.Description(infoText);
+   if(PositionsTotal() > 0) return false;
    
-   // Update signal label
+   MqlDateTime today, lastTradeDate;
+   TimeCurrent(today);
+   TimeToStruct(lastTradeDay, lastTradeDate);
+   
+   if(today.day != lastTradeDate.day || today.mon != lastTradeDate.mon || today.year != lastTradeDate.year)
+   {
+      todayTrades = 0;
+      lastTradeDay = StructToTime(today);
+   }
+   
+   return (todayTrades < 5 && (TimeCurrent() - lastTradeTime >= 1800));
+}
+
+//+------------------------------------------------------------------+
+//| Update display                                                  |
+//+------------------------------------------------------------------+
+void UpdateDisplay(double ma, double rsi, double bbUpper, double bbLower, double bbMiddle, string signal, double lots)
+{
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   
+   balanceLabel.Description(StringFormat("Balance: %.2f | Equity: %.2f", balance, equity));
+   balanceLabel.Color(equity < balance ? clrRed : clrLawnGreen);
+   
+   infoLabel.Description(StringFormat("FX Ninja v2.48 | %s %s | Trades: %d/5",
+                                  _Symbol, EnumToString(_Period), todayTrades));
+   
    signalLabel.Description("Signal: " + signal);
    signalLabel.Color(signal == "BUY" ? BuyColor : (signal == "SELL" ? SellColor : clrGray));
    
-   // Update MA label
-   maLabel.Description(StringFormat("MA(%d): %.5f", MAPeriod, maValue));
+   maLabel.Description(StringFormat("MA(%d): %.5f", MAPeriod, ma));
+   rsiLabel.Description(StringFormat("RSI(%d): %.2f", RSIPeriod, rsi));
+   rsiLabel.Color(rsi > 70 ? SellColor : (rsi < 30 ? BuyColor : clrDeepSkyBlue));
    
-   // Update RSI label
-   rsiLabel.Description(StringFormat("RSI(%d): %.2f", RSIPeriod, rsiValue));
-   rsiLabel.Color((rsiValue > 70) ? SellColor : ((rsiValue < 30) ? BuyColor : clrDeepSkyBlue));
-   
-   // Update BB label
-   bbLabel.Description(StringFormat("BB(%d,%.1f): %.5f | %.5f | %.5f", 
-                                   BBPeriod, BBDeviation, bbUpper, bbMiddle, bbLower));
+   bbLabel.Description(StringFormat("BB(%d): %.5f | %.5f | %.5f", BBPeriod, bbUpper, bbMiddle, bbLower));
+   lotSizeLabel.Description(StringFormat("Lot Size: %.2f", lots));
+   lotSizeLabel.Color(lots <= 0 ? clrRed : clrWhite);
 }
 
 //+------------------------------------------------------------------+
@@ -259,8 +320,7 @@ void OnTick()
 {
    // Check for new bar
    datetime currentBarTime = iTime(_Symbol, _Period, 0);
-   if(currentBarTime == lastBarTime)
-      return;
+   if(currentBarTime == lastBarTime) return;
    lastBarTime = currentBarTime;
    
    // Get indicator values
@@ -272,7 +332,7 @@ void OnTick()
       CopyBuffer(bbHandle, 0, 0, 1, bbMiddle) != 1)
    {
       Print("Error copying indicator buffers");
-      UpdateDisplay(0, 0, 0, 0, 0, "Data Error");
+      UpdateDisplay(0, 0, 0, 0, 0, "Data Error", 0);
       return;
    }
    
@@ -280,46 +340,52 @@ void OnTick()
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    
-   // Check for open positions
-   if(PositionsTotal() > 0)
-   {
-      UpdateDisplay(ma[0], rsi[0], bbUpper[0], bbLower[0], bbMiddle[0], "Position Open");
-      return;
-   }
-   
    // Calculate lot size
    double lotSize = CalculateLotSize();
    if(lotSize <= 0)
    {
-      Print("Invalid lot size calculation");
-      UpdateDisplay(ma[0], rsi[0], bbUpper[0], bbLower[0], bbMiddle[0], "Lot Size Error");
+      UpdateDisplay(ma[0], rsi[0], bbUpper[0], bbLower[0], bbMiddle[0], "Lot Size Error", 0);
       return;
    }
    
-   // Trading logic - RSI + Bollinger Bands strategy
+   // Trading logic
    string signal = "None";
-   if(rsi[0] < 30 && bid < bbLower[0]) // Buy signal (oversold and below lower band)
+   if(IsNewTradeAllowed())
    {
-      signal = "BUY";
-      double sl, tp;
-      if(ValidateStops(ask, sl, tp, true))
+      bool buyCondition = (rsi[0] < 30) && (bid < bbLower[0]);
+      bool sellCondition = (rsi[0] > 70) && (bid > bbUpper[0]);
+      
+      if(buyCondition)
       {
-         if(!trade.Buy(lotSize, _Symbol, ask, sl, tp, "RSI/BB Buy"))
-            Print("Buy order failed. Error: ", GetLastError(), " Lot Size: ", lotSize);
+         signal = "BUY";
+         double sl, tp;
+         if(ValidateStops(ask, sl, tp, true))
+         {
+            if(trade.Buy(lotSize, _Symbol, ask, sl, tp, "RSI/BB Buy"))
+            {
+               todayTrades++;
+               lastTradeTime = TimeCurrent();
+               Print("Buy order executed at ", ask);
+            }
+         }
       }
-   }
-   else if(rsi[0] > 70 && bid > bbUpper[0]) // Sell signal (overbought and above upper band)
-   {
-      signal = "SELL";
-      double sl, tp;
-      if(ValidateStops(bid, sl, tp, false))
+      else if(sellCondition)
       {
-         if(!trade.Sell(lotSize, _Symbol, bid, sl, tp, "RSI/BB Sell"))
-            Print("Sell order failed. Error: ", GetLastError(), " Lot Size: ", lotSize);
+         signal = "SELL";
+         double sl, tp;
+         if(ValidateStops(bid, sl, tp, false))
+         {
+            if(trade.Sell(lotSize, _Symbol, bid, sl, tp, "RSI/BB Sell"))
+            {
+               todayTrades++;
+               lastTradeTime = TimeCurrent();
+               Print("Sell order executed at ", bid);
+            }
+         }
       }
    }
    
    // Update display
-   UpdateDisplay(ma[0], rsi[0], bbUpper[0], bbLower[0], bbMiddle[0], signal);
+   UpdateDisplay(ma[0], rsi[0], bbUpper[0], bbLower[0], bbMiddle[0], signal, lotSize);
 }
 //+------------------------------------------------------------------+
