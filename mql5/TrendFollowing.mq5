@@ -5,26 +5,40 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Guardian Algo."
 #property link      "https://guardian26.unaux.com/"
-#property version   "1.01"
+#property version   "1.02"
 #property strict
 
 #include <Trade/Trade.mqh>
 CTrade trade;
 
-//---------------- INPUT PARAMETERS --------------------------------//
-input double RiskPercent      = 1.0;
-input int    EMA_Period       = 50;
-input int    ATR_Period       = 14;
-input double RR_Ratio         = 2.0;
-input double ATR_Multiplier   = 1.5;
-input bool   UseTrailingStop  = true;
+//================ INPUTS =================//
+input double RiskPercent = 1.0;
+input int EMA_Period = 50;
+input int ATR_Period = 14;
+input double RR_Ratio = 2.0;
+input double ATR_Multiplier = 1.5;
 
-//---------------- GLOBAL HANDLES ----------------------------------//
-int emaHandle;
-int atrHandle;
+input bool UseTrailingStop = true;
+
+//--- Session Filter
+input bool UseSessionFilter = true;
+input int LondonStart = 8;
+input int LondonEnd   = 17;
+input int NYStart     = 13;
+input int NYEnd       = 22;
+
+//--- News Filter (SAFE VERSION)
+input bool UseNewsFilter = true;
+input int NewsPauseMinutes = 30;
+
+input int ManualNewsHour = 14;
+input int ManualNewsMinute = 30;
+
+//================ GLOBALS =================//
+int emaHandle, atrHandle;
 
 //+------------------------------------------------------------------+
-//| Expert Initialization                                            |
+//| INIT                                                            |
 //+------------------------------------------------------------------+
 int OnInit()
 {
@@ -32,66 +46,108 @@ int OnInit()
    atrHandle = iATR(_Symbol, PERIOD_H1, ATR_Period);
 
    if(emaHandle == INVALID_HANDLE || atrHandle == INVALID_HANDLE)
-   {
-      Print("❌ Indicator initialization failed");
-      return(INIT_FAILED);
-   }
+      return INIT_FAILED;
 
-   return(INIT_SUCCEEDED);
+   return INIT_SUCCEEDED;
 }
 
 //+------------------------------------------------------------------+
-//| Check if there's already a trade on this symbol                  |
+//| SESSION FILTER (FIXED)                                           |
 //+------------------------------------------------------------------+
-bool HasOpenPosition()
+bool IsTradingSession()
 {
-   for(int i=0; i<PositionsTotal(); i++)
-   {
-      if(PositionGetSymbol(i) == _Symbol)
-         return true;
-   }
+   if(!UseSessionFilter) return true;
+
+   MqlDateTime time;
+   TimeToStruct(TimeCurrent(), time);
+
+   int hour = time.hour;
+
+   bool london = (hour >= LondonStart && hour < LondonEnd);
+   bool ny     = (hour >= NYStart && hour < NYEnd);
+
+   return (london || ny);
+}
+
+//+------------------------------------------------------------------+
+//| NEWS FILTER (SAFE VERSION)                                       |
+//+------------------------------------------------------------------+
+bool IsNewsTime()
+{
+   if(!UseNewsFilter) return false;
+
+   MqlDateTime nowStruct;
+   TimeToStruct(TimeCurrent(), nowStruct);
+
+   int currentMinutes = nowStruct.hour * 60 + nowStruct.min;
+   int newsMinutes = ManualNewsHour * 60 + ManualNewsMinute;
+
+   int diff = MathAbs(currentMinutes - newsMinutes);
+
+   if(diff <= NewsPauseMinutes)
+      return true;
+
    return false;
 }
 
 //+------------------------------------------------------------------+
-//| Calculate Lot Size                                               |
+//| LOT CALC                                                        |
 //+------------------------------------------------------------------+
-double CalculateLot(double stopLossPoints)
+double CalculateLot(double slPoints)
 {
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double riskMoney = balance * RiskPercent / 100.0;
+   double risk = balance * RiskPercent / 100.0;
 
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
 
    if(tickValue == 0 || tickSize == 0) return 0.01;
 
-   double lot = riskMoney / (stopLossPoints * tickValue / tickSize);
+   double lot = risk / (slPoints * tickValue / tickSize);
 
-   // Broker limits
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double step   = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
 
    lot = MathMax(minLot, MathMin(maxLot, lot));
-   lot = NormalizeDouble(lot / lotStep, 0) * lotStep;
+   lot = NormalizeDouble(lot / step, 0) * step;
 
    return lot;
 }
 
 //+------------------------------------------------------------------+
-//| Main Trading Logic                                               |
+//| CHECK POSITION                                                  |
+//+------------------------------------------------------------------+
+bool HasOpenPosition()
+{
+   for(int i=0; i<PositionsTotal(); i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         if(PositionGetString(POSITION_SYMBOL) == _Symbol)
+            return true;
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| MAIN                                                            |
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // Only trade on new candle
-   static datetime lastTime = 0;
-   datetime currentTime = iTime(_Symbol, PERIOD_H1, 0);
+   DrawInfoPanel();
+   
+   static datetime lastBar = 0;
+   datetime currentBar = iTime(_Symbol, PERIOD_H1, 0);
 
-   if(currentTime == lastTime)
-      return;
+   if(currentBar == lastBar) return;
+   lastBar = currentBar;
 
-   lastTime = currentTime;
+   // FILTERS
+   if(!IsTradingSession()) return;
+   if(IsNewsTime()) return;
 
    if(HasOpenPosition())
    {
@@ -99,13 +155,12 @@ void OnTick()
       return;
    }
 
-   // Get indicator data
    double ema[], atr[];
    ArraySetAsSeries(ema, true);
    ArraySetAsSeries(atr, true);
 
-   CopyBuffer(emaHandle, 0, 0, 3, ema);
-   CopyBuffer(atrHandle, 0, 0, 3, atr);
+   CopyBuffer(emaHandle, 0, 0, 2, ema);
+   CopyBuffer(atrHandle, 0, 0, 2, atr);
 
    double closePrev = iClose(_Symbol, PERIOD_H1, 1);
    double highPrev  = iHigh(_Symbol, PERIOD_H1, 1);
@@ -114,41 +169,35 @@ void OnTick()
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-   double stopLoss, takeProfit, lot;
+   double sl, tp, lot;
 
-   //================ BUY =================//
+   // BUY
    if(closePrev > ema[1] && ask > highPrev)
    {
-      stopLoss = ask - (atr[1] * ATR_Multiplier);
-      double slPoints = (ask - stopLoss) / _Point;
+      sl = ask - (atr[1] * ATR_Multiplier);
+      double slPoints = (ask - sl) / _Point;
 
       lot = CalculateLot(slPoints);
-      takeProfit = ask + (atr[1] * ATR_Multiplier * RR_Ratio);
+      tp = ask + (atr[1] * ATR_Multiplier * RR_Ratio);
 
-      if(trade.Buy(lot, _Symbol, ask, stopLoss, takeProfit, "BUY GOLD"))
-         Print("✅ BUY opened");
-      else
-         Print("❌ BUY failed: ", GetLastError());
+      trade.Buy(lot, _Symbol, ask, sl, tp);
    }
 
-   //================ SELL ================//
+   // SELL
    if(closePrev < ema[1] && bid < lowPrev)
    {
-      stopLoss = bid + (atr[1] * ATR_Multiplier);
-      double slPoints = (stopLoss - bid) / _Point;
+      sl = bid + (atr[1] * ATR_Multiplier);
+      double slPoints = (sl - bid) / _Point;
 
       lot = CalculateLot(slPoints);
-      takeProfit = bid - (atr[1] * ATR_Multiplier * RR_Ratio);
+      tp = bid - (atr[1] * ATR_Multiplier * RR_Ratio);
 
-      if(trade.Sell(lot, _Symbol, bid, stopLoss, takeProfit, "SELL GOLD"))
-         Print("✅ SELL opened");
-      else
-         Print("❌ SELL failed: ", GetLastError());
+      trade.Sell(lot, _Symbol, bid, sl, tp);
    }
 }
 
 //+------------------------------------------------------------------+
-//| Trailing Stop                                                    |
+//| TRAILING STOP                                                   |
 //+------------------------------------------------------------------+
 void ManageTrailingStop()
 {
@@ -162,37 +211,63 @@ void ManageTrailingStop()
    {
       ulong ticket = PositionGetTicket(i);
 
-      if(!PositionSelectByTicket(ticket))
-         continue;
-
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
-         continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
 
       double sl = PositionGetDouble(POSITION_SL);
       double tp = PositionGetDouble(POSITION_TP);
 
       double price, newSL;
 
-      // BUY
       if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
       {
          price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         newSL = price - (atr[0] * 1.2);
+         newSL = price - atr[0];
 
          if(newSL > sl)
             trade.PositionModify(ticket, newSL, tp);
       }
 
-      // SELL
       if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
       {
          price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         newSL = price + (atr[0] * 1.2);
+         newSL = price + atr[0];
 
          if(newSL < sl || sl == 0)
             trade.PositionModify(ticket, newSL, tp);
       }
    }
 }
-
 //+------------------------------------------------------------------+
+
+void DrawInfoPanel()
+{
+   string session = "OFF";
+   string news    = "OK";
+
+   //--- SESSION DETECTION
+   MqlDateTime time;
+   TimeToStruct(TimeCurrent(), time);
+
+   int hour = time.hour;
+
+   if(hour >= LondonStart && hour < LondonEnd)
+      session = "LONDON";
+   else if(hour >= NYStart && hour < NYEnd)
+      session = "NEW YORK";
+
+   //--- NEWS STATUS
+   if(IsNewsTime())
+      news = "BLOCKED";
+
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+
+   //--- DISPLAY TEXT
+   string text =
+      "=== TREND FOLLOWING EA ===\n" +
+      "Session: " + session + "\n" +
+      "News: " + news + "\n" +
+      "Balance: R" + DoubleToString(balance, 2);
+
+   Comment(text);
+}
